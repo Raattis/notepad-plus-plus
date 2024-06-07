@@ -106,6 +106,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\src\DarkMode\DarkMode.cpp" />
+    <ClCompile Include="..\src\FastUnmatch.cpp" />
     <ClCompile Include="..\src\MISC\Common\verifySignedfile.cpp" />
     <ClCompile Include="..\src\MISC\md5\md5Dlgs.cpp" />
     <ClCompile Include="..\src\MISC\sha1\calc_sha1.cpp" />
@@ -243,6 +244,7 @@
     <ClInclude Include="..\src\DarkMode\UAHMenuBar.h" />
     <ClInclude Include="..\src\dpiManager.h" />
     <ClInclude Include="..\src\dpiManagerV2.h" />
+    <ClInclude Include="..\src\FastUnmatch.h" />
     <ClInclude Include="..\src\keys.h" />
     <ClInclude Include="..\src\localizationString.h" />
     <ClInclude Include="..\src\MISC\Common\Sorters.h" />

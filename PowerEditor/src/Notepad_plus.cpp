@@ -40,6 +40,7 @@
 #include "fileBrowser.h"
 #include "Common.h"
 #include "NppDarkMode.h"
+#include "FastUnmatch.h"
 
 using namespace std;
 
@@ -2162,6 +2163,7 @@ bool Notepad_plus::findInFilelist(std::vector<generic_string> & fileNames)
 
 	const bool isEntireDoc = true;
 	bool hasInvalidRegExpr = false;
+	const FastUnmatch fastUnmatch(filesCount, *FindReplaceDlg::_env);
 
 	for (size_t i = 0, updateOnCount = filesPerPercent; i < filesCount; ++i)
 	{
@@ -2171,8 +2173,15 @@ bool Notepad_plus::findInFilelist(std::vector<generic_string> & fileNames)
 		BufferID id = MainFileManager.getBufferFromName(fileNames.at(i).c_str());
 		if (id == BUFFER_INVALID)
 		{
-			id = MainFileManager.loadFile(fileNames.at(i).c_str());
-			closeBuf = true;
+			if (fastUnmatch.isEnabled() && fastUnmatch.fileDoesNotContainString(fileNames.at(i).c_str()))
+			{
+				// Definitely no search hits in this file.
+			}
+			else
+			{
+				id = MainFileManager.loadFile(fileNames.at(i).c_str());
+				closeBuf = true;
+			}
 		}
 
 		if (id != BUFFER_INVALID)
