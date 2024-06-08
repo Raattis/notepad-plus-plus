@@ -1950,7 +1950,7 @@ bool Notepad_plus::replaceInFilelist(std::vector<generic_string> & fileNames)
 	{
 		if (filesCount >= 200)
 			filesPerPercent = filesCount / 100;
-		
+
 		generic_string msg = _nativeLangSpeaker.getLocalizedStrFromID(
 			"replace-in-files-progress-title", TEXT("Replace In Files progress..."));
 		progress.open(_findReplaceDlg.getHSelf(), msg.c_str());
@@ -2150,11 +2150,15 @@ bool Notepad_plus::findInFilelist(std::vector<generic_string> & fileNames)
 
 	size_t filesCount = fileNames.size();
 	size_t filesPerPercent = 1;
+	size_t updateInfoOnCount = 1;
 
 	if (filesCount > 1)
 	{
 		if (filesCount >= 200)
 			filesPerPercent = filesCount / 100;
+
+		if (filesPerPercent > 20)
+			updateInfoOnCount = filesPerPercent / 2;
 
 		generic_string msg = _nativeLangSpeaker.getLocalizedStrFromID(
 			"find-in-files-progress-title", TEXT("Find In Files progress..."));
@@ -2212,7 +2216,7 @@ bool Notepad_plus::findInFilelist(std::vector<generic_string> & fileNames)
 			updateOnCount += filesPerPercent;
 			progress.setPercent(int32_t((i * 100) / filesCount), fileNames.at(i).c_str(), nbTotal);
 		}
-		else
+		else if ((updateOnCount - i) % updateInfoOnCount == 0)
 		{
 			progress.setInfo(fileNames.at(i).c_str(), nbTotal);
 		}

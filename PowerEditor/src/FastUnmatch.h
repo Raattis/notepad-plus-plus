@@ -18,7 +18,7 @@
 #pragma once
 
 #include <tchar.h>
-#include <string>
+#include <vector>
 
 struct FindOption;
 
@@ -28,7 +28,7 @@ struct FindOption;
  *
  * Only enabled when
  *  - file count to be searched is >=100,
- *  - search term is >1 characters long and
+ *  - search term is >=4 bytes in utf-8 and utf-16 and
  *  - search type is Normal or Extended.
  */
 class FastUnmatch
@@ -43,5 +43,6 @@ public:
 private:
 	bool enabled;
 	const bool matchCase;
-	std::string searchTerm;
+	std::vector<std::vector<uint8_t>> searchTerms;
+	size_t maxSearchTermLength = 0;
 };
