@@ -19,6 +19,7 @@
 
 #include <tchar.h>
 #include <vector>
+#include <unordered_map>
 
 struct FindOption;
 
@@ -42,13 +43,22 @@ public:
 
 private:
 	bool enabled;
-	std::vector<std::vector<uint8_t>> searchTerms;
-	std::vector<std::vector<uint16_t>> searchTermsWide;
+	bool matchCase;
+	std::unordered_map<int, std::vector<uint8_t>> searchTerms;
+	std::vector<uint16_t> searchTermsWideBE;
+	std::vector<uint16_t> searchTermsWideLE;
 
-	std::vector<std::vector<uint8_t>> searchTermsUpper;
-	std::vector<std::vector<uint8_t>> searchTermsLower;
-
-	std::vector<std::vector<uint16_t>> searchTermsWideUpper;
-	std::vector<std::vector<uint16_t>> searchTermsWideLower;
-	size_t maxSearchTermLength = 0;
+	struct UpperAndLower8
+	{
+		std::vector<uint8_t> upper;
+		std::vector<uint8_t> lower;
+	};
+	struct UpperAndLower16
+	{
+		std::vector<uint16_t> upper;
+		std::vector<uint16_t> lower;
+	};
+	std::unordered_map<int, UpperAndLower8> searchTermsCaseInsensitive;
+	UpperAndLower16 searchTermsWideCaseInsensitiveBE;
+	UpperAndLower16 searchTermsWideCaseInsensitiveLE;
 };

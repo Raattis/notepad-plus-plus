@@ -20,6 +20,7 @@
 #include "Utf8_16.h" // determineEncoding
 #include "EncodingMapper.h"
 #include <windows.h>
+#include "uchardet.h"
 
 namespace detail
 {
@@ -59,13 +60,13 @@ inline static bool containsWide(const uint16_t* __restrict haystack, size_t len,
 	return false;
 }
 
-inline static bool containsCaseInsensitive(const char* haystack, size_t len, const std::vector<uint8_t>& lower, const std::vector<uint8_t>& upper)
+inline static bool containsCaseInsensitive(const uint8_t* haystack, size_t len, const std::vector<uint8_t>& lower, const std::vector<uint8_t>& upper)
 {
 	const uint8_t lower0 = lower[0];
 	const uint8_t upper0 = upper[0];
 
 	const size_t needleLen = lower.size();
-	const char* last = haystack + len - needleLen;
+	const uint8_t* last = haystack + len - needleLen;
 	for (; haystack <= last; ++haystack)
 	{
 		if (haystack[0] != lower0 && haystack[0] != upper0)
@@ -116,6 +117,20 @@ inline static bool containsCaseInsensitiveWide(const uint16_t* haystack, size_t 
 	}
 	return false;
 }
+
+static int detectCodepage(const uint8_t* buf, size_t len)
+{
+	int codepage = -1;
+	uchardet_t ud = uchardet_new();
+	uchardet_handle_data(ud, reinterpret_cast<const char*>(buf), len);
+	uchardet_data_end(ud);
+	const char* cs = uchardet_get_charset(ud);
+	if (stricmp(cs, "TIS-620") != 0) // TIS-620 detection is disabled here because uchardet detects usually wrongly UTF-8 as TIS-620
+		codepage = EncodingMapper::getInstance().getEncodingFromString(cs);
+	uchardet_delete(ud);
+	return codepage;
+}
+
 /*
 static bool wcontains(const TCHAR* haystack, size_t len, const TCHAR* needle, size_t needle_len)
 {
@@ -151,6 +166,7 @@ constexpr int upperLimitSearchTermLength = 2048;
 
 FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 	: enabled{ false }
+	, matchCase{ findOptions._isMatchCase }
 {
 	const int searchTermLength = (int)findOptions._str2Search.length();
 	const int minSearchTermLength = 1;
@@ -186,21 +202,27 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 	enabled = true;
 
 	{
-		searchTermsWide.emplace_back(baseSearchString.begin(), baseSearchString.end());
-		std::vector<uint16_t>& bigEndian = searchTermsWide.emplace_back();
+		searchTermsWideLE.assign(baseSearchString.begin(), baseSearchString.end());
+		std::vector<uint16_t>& bigEndian = searchTermsWideBE;
 		for (uint16_t word : baseSearchString)
 		{
 			bigEndian.emplace_back() = (word >> 8) | (word << 8);
 		}
 	}
 
-	if (findOptions._isMatchCase)
+	if (matchCase)
 	{
+		bool utf8_added = false;
 		for (int i = 0; i < 128; ++i)
 		{
 			int codePage = EncodingMapper::getInstance().getEncodingFromIndex(i);
 			if (codePage == -1)
-				continue;
+			{
+				if (utf8_added)
+					continue;
+				else
+					utf8_added = true;
+			}
 
 			int neededSize = WideCharToMultiByte(codePage, 0, baseSearchString.c_str(), (int)baseSearchString.size(), NULL, 0, NULL, NULL);
 			if (neededSize <= 0)
@@ -212,10 +234,7 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 			if (multiByteSearchString.empty())
 				continue;
 
-			if (std::find(searchTerms.begin(), searchTerms.end(), multiByteSearchString) != searchTerms.end())
-				continue;
-
-			searchTerms.emplace_back(std::move(multiByteSearchString));
+			searchTerms[codePage] = std::move(multiByteSearchString);
 		}
 	}
 	else
@@ -248,62 +267,22 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 				WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), (char*)multiByteSearchStringUpper.data(), neededSize, NULL, NULL);
 			}
 
-			if (multiByteSearchStringLower == multiByteSearchStringUpper)
+			if (multiByteSearchStringLower.size() != multiByteSearchStringUpper.size())
 			{
-				if (multiByteSearchStringLower.empty())
-					continue;
-
-				searchTerms.emplace_back(std::move(multiByteSearchStringLower));
-			}
-			else
-			{
-				if (multiByteSearchStringLower.size() != multiByteSearchStringUpper.size())
+				size_t shorter = multiByteSearchStringLower.size() < multiByteSearchStringUpper.size() ? multiByteSearchStringLower.size() : multiByteSearchStringUpper.size();
+				if (shorter == 0)
 				{
-					size_t shorter = multiByteSearchStringLower.size() < multiByteSearchStringUpper.size() ? multiByteSearchStringLower.size() : multiByteSearchStringUpper.size();
-					if (shorter == 0)
-					{
-						enabled = false;
-						continue;
-					}
-
-					multiByteSearchStringLower.resize(shorter);
-					multiByteSearchStringUpper.resize(shorter);
+					enabled = false;
+					continue;
 				}
 
-				bool foundLower = std::find(searchTermsLower.begin(), searchTermsLower.end(), multiByteSearchStringLower) != searchTermsLower.end();
-				bool foundUpper = std::find(searchTermsUpper.begin(), searchTermsUpper.end(), multiByteSearchStringUpper) != searchTermsUpper.end();
-				if (foundLower && foundUpper)
-					continue;
-
-				searchTermsLower.emplace_back(std::move(multiByteSearchStringLower));
-				searchTermsUpper.emplace_back(std::move(multiByteSearchStringUpper));
+				multiByteSearchStringLower.resize(shorter);
+				multiByteSearchStringUpper.resize(shorter);
 			}
+
+			searchTermsCaseInsensitive[codePage] = { std::move(multiByteSearchStringLower), std::move(multiByteSearchStringUpper) };
 		}
 	}
-
-	for (const std::vector<uint8_t>& s : searchTerms)
-	{
-		if (maxSearchTermLength < s.size())
-			maxSearchTermLength = s.size();
-	}
-	for (const std::vector<uint16_t>& s : searchTermsWide)
-	{
-		if (maxSearchTermLength < s.size() * 2)
-			maxSearchTermLength = s.size() * 2;
-	}
-	for (const std::vector<uint8_t>& s : searchTermsLower)
-	{
-		if (maxSearchTermLength < s.size())
-			maxSearchTermLength = s.size();
-	}
-	for (const std::vector<uint16_t>& s : searchTermsWideLower)
-	{
-		if (maxSearchTermLength < s.size() * 2)
-			maxSearchTermLength = s.size() * 2;
-	}
-
-	if (maxSearchTermLength > upperLimitSearchTermLength)
-		enabled = false;
 }
 
 bool FastUnmatch::fileDoesNotContainString(const TCHAR* filename) const
@@ -331,75 +310,40 @@ bool FastUnmatch::fileDoesNotContainString(const TCHAR* filename) const
 		return false;
 	}
 
-	bool not_found = true;
+	bool not_found = 0;
+	int codepage = -1;
+	UniMode unimode = Utf8_16_Read::determineEncoding(fileContents, fileSize);
+	switch (unimode)
 	{
-		int i = 0;
-		const int stride = 4096;
-		for (; i + stride + maxSearchTermLength < fileSize; i += stride)
-		{
-			for (const std::vector<uint8_t>& searchTerm : searchTerms)
-			{
-				if (!detail::contains(fileContents + i, stride, searchTerm))
-					continue;
-
-				not_found = false;
-				goto stop_search;
-			}
-
-			for (const std::vector<uint16_t>& searchTerm : searchTermsWide)
-			{
-				if (!detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents + i), stride / 2, searchTerm))
-					continue;
-
-				not_found = false;
-				goto stop_search;
-			}
-		}
-
-		for (const std::vector<uint8_t>& searchTerm : searchTerms)
-		{
-			if (!detail::contains(fileContents + i, static_cast<size_t>(fileSize - i), searchTerm))
-				continue;
-
+	case uni8Bit: // ANSI
+		codepage = detail::detectCodepage(fileContents, fileSize);
+		[[fallthrough]];
+	case uniUTF8: [[fallthrough]]; // UTF-8 with BOM
+	case uniCookie: [[fallthrough]]; // UTF-8 without BOM
+	case uni7Bit:
+		if (matchCase && !detail::contains(fileContents, fileSize, searchTerms.at(codepage)))
 			not_found = false;
-			goto stop_search;
-		}
-
-		for (const std::vector<uint16_t>& searchTerm : searchTermsWide)
-		{
-			if (!detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents + i), static_cast<size_t>(fileSize - i) / 2, searchTerm))
-				continue;
-
+		if (!matchCase && !detail::containsCaseInsensitive(fileContents, fileSize, searchTermsCaseInsensitive.at(codepage).lower, searchTermsCaseInsensitive.at(codepage).upper))
 			not_found = false;
-			goto stop_search;
-		}
-	}
-	
-	for (int term = 0; term < searchTermsLower.size(); ++term)
-	{
-		const std::vector<uint8_t>& lower = searchTermsLower[term];
-		const std::vector<uint8_t>& upper = searchTermsUpper[term];
+		break;
+	case uni16BE: [[fallthrough]]; // UTF-16 Big Ending with BOM
+	case uni16BE_NoBOM: // UTF-16 Big Ending without BOM
+		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideBE))
+			not_found = true;
+		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveBE.lower, searchTermsWideCaseInsensitiveBE.upper))
+			not_found = true;
+		break;
+	case uni16LE: [[fallthrough]]; // UTF-16 Little Ending with BOM
+	case uni16LE_NoBOM: // UTF-16 Little Ending without BOM
+		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideLE))
+			not_found = true;
+		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveLE.lower, searchTermsWideCaseInsensitiveLE.upper))
+			not_found = true;
+		break;
+	case uniEnd:
+		break;
+	};
 
-		if (!detail::containsCaseInsensitive((const char*)fileContents, fileSize, lower, upper))
-			continue;
-
-		not_found = false;
-		goto stop_search;
-	}
-	
-	for (int term = 0; term < searchTermsWideLower.size(); ++term)
-	{
-		const std::vector<uint16_t>& lower = searchTermsWideLower[term];
-		const std::vector<uint16_t>& upper = searchTermsWideUpper[term];
-
-		if (!detail::containsCaseInsensitiveWide((const uint16_t*)fileContents, fileSize / sizeof(uint16_t), lower, upper))
-			continue;
-
-		not_found = false;
-		goto stop_search;
-	}
-
-stop_search:
 	UnmapViewOfFile(fileContents);
 	CloseHandle(hMapping);
 	CloseHandle(hFile);
