@@ -42,7 +42,13 @@ public:
 
 private:
 	bool enabled;
-	const bool matchCase;
 	std::vector<std::vector<uint8_t>> searchTerms;
+	std::vector<std::vector<uint16_t>> searchTermsWide;
+
+	std::vector<std::vector<uint8_t>> searchTermsUpper;
+	std::vector<std::vector<uint8_t>> searchTermsLower;
+
+	std::vector<std::vector<uint16_t>> searchTermsWideUpper;
+	std::vector<std::vector<uint16_t>> searchTermsWideLower;
 	size_t maxSearchTermLength = 0;
 };
