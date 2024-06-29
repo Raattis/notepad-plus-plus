@@ -269,8 +269,10 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 	{
 		std::wstring lower = baseSearchString;
 		std::wstring upper = baseSearchString;
-		_wcslwr_s(lower.data(), lower.length());
-		_wcsupr_s(upper.data(), upper.length());
+		errno_t err = _wcslwr_s(lower.data(), lower.length() + 1);
+		DEBUG_LOGF("err: %d", err);
+		err = _wcsupr_s(upper.data(), upper.length() + 1);
+		DEBUG_LOGF("err: %d", err);
 
 		auto addCodePageCaseInsensitive = [&](int codePage)
 		{
