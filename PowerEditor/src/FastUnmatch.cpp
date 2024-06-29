@@ -22,6 +22,8 @@
 #include <windows.h>
 #include "uchardet.h"
 
+#include <stdio.h> // NOCOMMIT
+
 namespace detail
 {
 inline static bool contains(const uint8_t* __restrict haystack, size_t len, const std::vector<uint8_t>& needle)
@@ -71,17 +73,20 @@ inline static bool containsCaseInsensitive(const uint8_t* haystack, size_t len, 
 	{
 		if (haystack[0] != lower0 && haystack[0] != upper0)
 		{
-no_match:
 			continue;
 		}
 
+		bool no_match = false;
 		for (size_t i = 1; i < needleLen; ++i)
 		{
 			if (haystack[i] == lower[i] || haystack[i] == upper[i])
 				continue;
 
-			goto no_match;
+			no_match = true;
+			break;
 		}
+		if (no_match)
+			continue;
 
 		return true;
 	}
@@ -162,6 +167,9 @@ static bool wcontainsCaseInsensitive(const TCHAR* haystack, size_t len, const TC
 }*/
 }
 
+//#define DEBUG_LOGF(p_fmt, ...) do { char buffer ## __LINE__[4096]; sprintf_s(buffer ## __LINE__, sizeof(buffer ## __LINE__), p_fmt "\n", __VA_ARGS__); OutputDebugStringA(buffer ## __LINE__); } while(false)
+#define DEBUG_LOGF(p_fmt, ...) do {} while(false)
+
 constexpr int upperLimitSearchTermLength = 2048;
 
 FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
@@ -210,31 +218,47 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 		}
 	}
 
+	auto convertCodePage = [&](int codePage, const std::wstring& baseSearchString, std::vector<uint8_t>& out) -> bool
+	{
+		int neededSize = WideCharToMultiByte(codePage, 0, baseSearchString.c_str(), (int)baseSearchString.size(), NULL, 0, NULL, NULL);
+		if (neededSize <= 0)
+			return false;
+
+		std::vector<uint8_t> multiByteSearchString;
+		multiByteSearchString.resize(neededSize, 0);
+		WideCharToMultiByte(codePage, 0, baseSearchString.c_str(), (int)baseSearchString.size(), (char*)multiByteSearchString.data(), neededSize, NULL, NULL);
+		if (multiByteSearchString.empty())
+			return false;
+
+		out =  std::move(multiByteSearchString);
+		return true;
+	};
+
 	if (matchCase)
 	{
-		bool utf8_added = false;
+		auto addCodePage = [&](int codePage) -> bool
+		{
+			std::vector<uint8_t> multiByteSearchString;
+			if (!convertCodePage(codePage, baseSearchString, multiByteSearchString))
+				return false;
+
+			searchTerms[codePage] = std::move(multiByteSearchString);
+			return true;
+		};
+
+		[[maybe_unused]] bool utf8Added = addCodePage(CP_UTF8);
+		assert(utf8Added && "Couldn't convert UTF-16 search term to UTF-8.");
+		searchTerms[-1] = searchTerms[CP_UTF8];
+
+		if (searchTerms.contains(CP_UTF8))
+
 		for (int i = 0; i < 128; ++i)
 		{
 			int codePage = EncodingMapper::getInstance().getEncodingFromIndex(i);
 			if (codePage == -1)
-			{
-				if (utf8_added)
-					continue;
-				else
-					utf8_added = true;
-			}
-
-			int neededSize = WideCharToMultiByte(codePage, 0, baseSearchString.c_str(), (int)baseSearchString.size(), NULL, 0, NULL, NULL);
-			if (neededSize <= 0)
 				continue;
 
-			std::vector<uint8_t> multiByteSearchString;
-			multiByteSearchString.resize(neededSize, 0);
-			WideCharToMultiByte(codePage, 0, baseSearchString.c_str(), (int)baseSearchString.size(), (char*)multiByteSearchString.data(), neededSize, NULL, NULL);
-			if (multiByteSearchString.empty())
-				continue;
-
-			searchTerms[codePage] = std::move(multiByteSearchString);
+			addCodePage(codePage);
 		}
 	}
 	else
@@ -244,43 +268,66 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 		_wcslwr_s(lower.data(), lower.length());
 		_wcsupr_s(upper.data(), upper.length());
 
+		auto addCodePageCaseInsensitive = [&](int codePage)
+		{
+			std::vector<uint8_t> resultLower;
+			std::vector<uint8_t> resultUpper;
+
+
+			int neededSize = WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), NULL, 0, NULL, NULL);
+			if (neededSize > 0)
+			{
+				resultLower.resize(neededSize, 0);
+				WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), (char*)resultLower.data(), neededSize, NULL, NULL);
+			}
+
+			neededSize = WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), NULL, 0, NULL, NULL);
+			if (neededSize > 0)
+			{
+				resultUpper.resize(neededSize, 0);
+				WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), (char*)resultUpper.data(), neededSize, NULL, NULL);
+			}
+
+			if (resultLower.size() != resultUpper.size())
+			{
+				size_t shorter = resultLower.size() < resultUpper.size() ? resultLower.size() : resultUpper.size();
+				if (shorter == 0)
+				{
+					return false;
+				}
+
+				resultLower.resize(shorter);
+				resultUpper.resize(shorter);
+			}
+
+			if (resultLower == resultUpper)
+				searchTerms[codePage] = std::move(resultLower);
+			else
+				searchTermsCaseInsensitive[codePage] = { std::move(resultLower), std::move(resultUpper) };
+			return true;
+		};
+
+		[[maybe_unused]] bool utf8Added = addCodePageCaseInsensitive(CP_UTF8);
+		assert(utf8Added && "Couldn't convert UTF-16 search term to case insensitive UTF-8.");
+
+		if (searchTermsCaseInsensitive.contains(CP_UTF8))
+			searchTermsCaseInsensitive[-1] = searchTermsCaseInsensitive[CP_UTF8];
+		else if (searchTerms.contains(CP_UTF8))
+			searchTerms[-1] = searchTerms[CP_UTF8];
+		else
+		{
+			assert(!"No UTF-8 equivalent of search term found.");
+			enabled = false;
+			return;
+		}
+
 		for (int i = 0; i < 128; ++i)
 		{
 			int codePage = EncodingMapper::getInstance().getEncodingFromIndex(i);
 			if (codePage == -1)
 				continue;
 
-			std::vector<uint8_t> multiByteSearchStringLower;
-			std::vector<uint8_t> multiByteSearchStringUpper;
-
-			int neededSize = WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), NULL, 0, NULL, NULL);
-			if (neededSize > 0)
-			{
-				multiByteSearchStringLower.resize(neededSize, 0);
-				WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), (char*)multiByteSearchStringLower.data(), neededSize, NULL, NULL);
-			}
-
-			neededSize = WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), NULL, 0, NULL, NULL);
-			if (neededSize > 0)
-			{
-				multiByteSearchStringUpper.resize(neededSize, 0);
-				WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), (char*)multiByteSearchStringUpper.data(), neededSize, NULL, NULL);
-			}
-
-			if (multiByteSearchStringLower.size() != multiByteSearchStringUpper.size())
-			{
-				size_t shorter = multiByteSearchStringLower.size() < multiByteSearchStringUpper.size() ? multiByteSearchStringLower.size() : multiByteSearchStringUpper.size();
-				if (shorter == 0)
-				{
-					enabled = false;
-					continue;
-				}
-
-				multiByteSearchStringLower.resize(shorter);
-				multiByteSearchStringUpper.resize(shorter);
-			}
-
-			searchTermsCaseInsensitive[codePage] = { std::move(multiByteSearchStringLower), std::move(multiByteSearchStringUpper) };
+			addCodePageCaseInsensitive(codePage);
 		}
 	}
 }
@@ -310,31 +357,44 @@ bool FastUnmatch::fileDoesNotContainString(const TCHAR* filename) const
 		return false;
 	}
 
-	bool not_found = 0;
-	int codepage = -1;
+	bool not_found = false;
+	int codepage = CP_UTF8;
 	UniMode unimode = Utf8_16_Read::determineEncoding(fileContents, fileSize);
 	switch (unimode)
 	{
-	case uni8Bit: // ANSI
-		codepage = detail::detectCodepage(fileContents, fileSize);
-		[[fallthrough]];
+	case uni8Bit: [[fallthrough]]; // ANSI
 	case uniUTF8: [[fallthrough]]; // UTF-8 with BOM
 	case uniCookie: [[fallthrough]]; // UTF-8 without BOM
 	case uni7Bit:
-		if (matchCase && !detail::contains(fileContents, fileSize, searchTerms.at(codepage)))
-			not_found = false;
-		if (!matchCase && !detail::containsCaseInsensitive(fileContents, fileSize, searchTermsCaseInsensitive.at(codepage).lower, searchTermsCaseInsensitive.at(codepage).upper))
-			not_found = false;
+		codepage = detail::detectCodepage(fileContents, fileSize < 1024 ? fileSize : 1024);
+		if (searchTerms.contains(codepage))
+		{
+			if (!detail::contains(fileContents, fileSize, searchTerms.at(codepage)))
+				not_found = true;
+			else
+				DEBUG_LOGF("Matched '%S' codepage: %d, unimode: %d, line:%d", filename, codepage, unimode, __LINE__);
+		}
+		else if (!matchCase && searchTermsCaseInsensitive.contains(codepage))
+		{
+			if (!detail::containsCaseInsensitive(fileContents, fileSize, searchTermsCaseInsensitive.at(codepage).lower, searchTermsCaseInsensitive.at(codepage).upper))
+				not_found = true;
+			else
+				DEBUG_LOGF("Matched '%S' codepage: %d, unimode: %d, line:%d", filename, codepage, unimode, __LINE__);
+		}
+		else
+		{
+			assert(!"Unhandled codepage");
+		}
 		break;
-	case uni16BE: [[fallthrough]]; // UTF-16 Big Ending with BOM
-	case uni16BE_NoBOM: // UTF-16 Big Ending without BOM
+	case uni16BE: [[fallthrough]]; // UTF-16 Big Endian with BOM
+	case uni16BE_NoBOM: // UTF-16 Big Endian without BOM
 		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideBE))
 			not_found = true;
 		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveBE.lower, searchTermsWideCaseInsensitiveBE.upper))
 			not_found = true;
 		break;
-	case uni16LE: [[fallthrough]]; // UTF-16 Little Ending with BOM
-	case uni16LE_NoBOM: // UTF-16 Little Ending without BOM
+	case uni16LE: [[fallthrough]]; // UTF-16 Little Endian with BOM
+	case uni16LE_NoBOM: // UTF-16 Little Endian without BOM
 		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideLE))
 			not_found = true;
 		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveLE.lower, searchTermsWideCaseInsensitiveLE.upper))
@@ -347,6 +407,7 @@ bool FastUnmatch::fileDoesNotContainString(const TCHAR* filename) const
 	UnmapViewOfFile(fileContents);
 	CloseHandle(hMapping);
 	CloseHandle(hFile);
-
+	if (!not_found)
+		DEBUG_LOGF("Couldn't unmatch '%S' %d", filename, __LINE__);
 	return not_found;
 }
