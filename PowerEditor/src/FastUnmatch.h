@@ -42,9 +42,11 @@ public:
 	}
 
 private:
+	bool doesMatch(const TCHAR* filename, const uint8_t* fileContents, size_t fileSize) const;
+
 	bool enabled;
 	bool matchCase;
-	std::unordered_map<int, std::vector<uint8_t>> searchTerms;
+	std::vector<std::pair<int, std::vector<uint8_t>>> searchTerms;
 	std::vector<uint16_t> searchTermsWideBE;
 	std::vector<uint16_t> searchTermsWideLE;
 
@@ -58,7 +60,7 @@ private:
 		std::vector<uint16_t> upper;
 		std::vector<uint16_t> lower;
 	};
-	std::unordered_map<int, UpperAndLower8> searchTermsCaseInsensitive;
+	std::vector<std::pair<int, UpperAndLower8>> searchTermsCaseInsensitive;
 	UpperAndLower16 searchTermsWideCaseInsensitiveBE;
 	UpperAndLower16 searchTermsWideCaseInsensitiveLE;
 };

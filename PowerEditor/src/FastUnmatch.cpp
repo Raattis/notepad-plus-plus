@@ -123,6 +123,7 @@ inline static bool containsCaseInsensitiveWide(const uint16_t* haystack, size_t 
 	return false;
 }
 
+/*
 static int detectCodepage(const uint8_t* buf, size_t len)
 {
 	int codepage = -1;
@@ -135,6 +136,7 @@ static int detectCodepage(const uint8_t* buf, size_t len)
 	uchardet_delete(ud);
 	return codepage;
 }
+*/
 
 /*
 static bool wcontains(const TCHAR* haystack, size_t len, const TCHAR* needle, size_t needle_len)
@@ -167,8 +169,8 @@ static bool wcontainsCaseInsensitive(const TCHAR* haystack, size_t len, const TC
 }*/
 }
 
-//#define DEBUG_LOGF(p_fmt, ...) do { char buffer ## __LINE__[4096]; sprintf_s(buffer ## __LINE__, sizeof(buffer ## __LINE__), p_fmt "\n", __VA_ARGS__); OutputDebugStringA(buffer ## __LINE__); } while(false)
-#define DEBUG_LOGF(p_fmt, ...) do {} while(false)
+#define DEBUG_LOGF(p_fmt, ...) do { char buffer ## __LINE__[4096]; sprintf_s(buffer ## __LINE__, sizeof(buffer ## __LINE__), p_fmt "\n", __VA_ARGS__); OutputDebugStringA(buffer ## __LINE__); } while(false)
+//#define DEBUG_LOGF(p_fmt, ...) do {} while(false)
 
 constexpr int upperLimitSearchTermLength = 2048;
 
@@ -242,15 +244,17 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 			if (!convertCodePage(codePage, baseSearchString, multiByteSearchString))
 				return false;
 
-			searchTerms[codePage] = std::move(multiByteSearchString);
+			for (const auto& [codepage, searchTerm] : searchTerms)
+			{
+				if (searchTerm == multiByteSearchString)
+					return false;
+			}
+			searchTerms.emplace_back(codePage, std::move(multiByteSearchString));
 			return true;
 		};
 
 		[[maybe_unused]] bool utf8Added = addCodePage(CP_UTF8);
 		assert(utf8Added && "Couldn't convert UTF-16 search term to UTF-8.");
-		searchTerms[-1] = searchTerms[CP_UTF8];
-
-		if (searchTerms.contains(CP_UTF8))
 
 		for (int i = 0; i < 128; ++i)
 		{
@@ -301,22 +305,30 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 			}
 
 			if (resultLower == resultUpper)
-				searchTerms[codePage] = std::move(resultLower);
+			{
+				for (const auto& [codepage, searchTerm] : searchTerms)
+				{
+					if (searchTerm == resultLower)
+						return false;
+				}
+				searchTerms.emplace_back(codePage, std::move(resultLower));
+			}
 			else
-				searchTermsCaseInsensitive[codePage] = { std::move(resultLower), std::move(resultUpper) };
+			{
+				for (const auto& [codepage, searchTerm] : searchTermsCaseInsensitive)
+				{
+					if (searchTerm.lower == resultLower && searchTerm.upper == resultUpper)
+						return false;
+				}
+				searchTermsCaseInsensitive.emplace_back(codePage, UpperAndLower8{std::move(resultLower), std::move(resultUpper)});
+			}
 			return true;
 		};
 
-		[[maybe_unused]] bool utf8Added = addCodePageCaseInsensitive(CP_UTF8);
-		assert(utf8Added && "Couldn't convert UTF-16 search term to case insensitive UTF-8.");
-
-		if (searchTermsCaseInsensitive.contains(CP_UTF8))
-			searchTermsCaseInsensitive[-1] = searchTermsCaseInsensitive[CP_UTF8];
-		else if (searchTerms.contains(CP_UTF8))
-			searchTerms[-1] = searchTerms[CP_UTF8];
-		else
+		bool utf8Added = addCodePageCaseInsensitive(CP_UTF8);
+		if (!utf8Added)
 		{
-			assert(!"No UTF-8 equivalent of search term found.");
+			assert(utf8Added && "Couldn't convert UTF-16 search term to case insensitive UTF-8.");
 			enabled = false;
 			return;
 		}
@@ -330,6 +342,54 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 			addCodePageCaseInsensitive(codePage);
 		}
 	}
+}
+
+bool FastUnmatch::doesMatch([[maybe_unused]] const TCHAR* filename, const uint8_t* fileContents, size_t fileSize) const
+{
+	UniMode unimode = Utf8_16_Read::determineEncoding(fileContents, fileSize);
+	switch (unimode)
+	{
+	case uni8Bit: [[fallthrough]]; // ANSI
+	case uniUTF8: [[fallthrough]]; // UTF-8 with BOM
+	case uniCookie: [[fallthrough]]; // UTF-8 without BOM
+	case uni7Bit:
+		for (const auto& [codepage, searchTerm] : searchTerms)
+		{
+			if (!detail::contains(fileContents, fileSize, searchTerm))
+				continue;
+
+			DEBUG_LOGF("Matched '%S' codepage: %d, unimode: %d, line:%d", filename, codepage, unimode, __LINE__);
+			return true;
+		}
+		for (const auto& [codepage, searchTermCaseInsensitive] : searchTermsCaseInsensitive)
+		{
+			if (!detail::containsCaseInsensitive(fileContents, fileSize, searchTermCaseInsensitive.lower, searchTermCaseInsensitive.upper))
+				continue;
+
+			DEBUG_LOGF("Matched '%S' codepage: %d, unimode: %d, line:%d", filename, codepage, unimode, __LINE__);
+			return true;
+		}
+		break;
+	case uni16BE: [[fallthrough]]; // UTF-16 Big Endian with BOM
+	case uni16BE_NoBOM: // UTF-16 Big Endian without BOM
+		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideBE))
+			return true;
+		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveBE.lower, searchTermsWideCaseInsensitiveBE.upper))
+			return true;
+		DEBUG_LOGF("Couldn't unmatch '%S' %d, unimode: %d", filename, unimode, __LINE__);
+		break;
+	case uni16LE: [[fallthrough]]; // UTF-16 Little Endian with BOM
+	case uni16LE_NoBOM: // UTF-16 Little Endian without BOM
+		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideLE))
+			return true;
+		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveLE.lower, searchTermsWideCaseInsensitiveLE.upper))
+			return true;
+		break;
+	case uniEnd:
+		break;
+	};
+
+	return false;
 }
 
 bool FastUnmatch::fileDoesNotContainString(const TCHAR* filename) const
@@ -357,57 +417,10 @@ bool FastUnmatch::fileDoesNotContainString(const TCHAR* filename) const
 		return false;
 	}
 
-	bool not_found = false;
-	int codepage = CP_UTF8;
-	UniMode unimode = Utf8_16_Read::determineEncoding(fileContents, fileSize);
-	switch (unimode)
-	{
-	case uni8Bit: [[fallthrough]]; // ANSI
-	case uniUTF8: [[fallthrough]]; // UTF-8 with BOM
-	case uniCookie: [[fallthrough]]; // UTF-8 without BOM
-	case uni7Bit:
-		codepage = detail::detectCodepage(fileContents, fileSize < 1024 ? fileSize : 1024);
-		if (searchTerms.contains(codepage))
-		{
-			if (!detail::contains(fileContents, fileSize, searchTerms.at(codepage)))
-				not_found = true;
-			else
-				DEBUG_LOGF("Matched '%S' codepage: %d, unimode: %d, line:%d", filename, codepage, unimode, __LINE__);
-		}
-		else if (!matchCase && searchTermsCaseInsensitive.contains(codepage))
-		{
-			if (!detail::containsCaseInsensitive(fileContents, fileSize, searchTermsCaseInsensitive.at(codepage).lower, searchTermsCaseInsensitive.at(codepage).upper))
-				not_found = true;
-			else
-				DEBUG_LOGF("Matched '%S' codepage: %d, unimode: %d, line:%d", filename, codepage, unimode, __LINE__);
-		}
-		else
-		{
-			assert(!"Unhandled codepage");
-		}
-		break;
-	case uni16BE: [[fallthrough]]; // UTF-16 Big Endian with BOM
-	case uni16BE_NoBOM: // UTF-16 Big Endian without BOM
-		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideBE))
-			not_found = true;
-		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveBE.lower, searchTermsWideCaseInsensitiveBE.upper))
-			not_found = true;
-		break;
-	case uni16LE: [[fallthrough]]; // UTF-16 Little Endian with BOM
-	case uni16LE_NoBOM: // UTF-16 Little Endian without BOM
-		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideLE))
-			not_found = true;
-		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveLE.lower, searchTermsWideCaseInsensitiveLE.upper))
-			not_found = true;
-		break;
-	case uniEnd:
-		break;
-	};
+	bool not_found = !doesMatch(filename, fileContents, fileSize);
 
 	UnmapViewOfFile(fileContents);
 	CloseHandle(hMapping);
 	CloseHandle(hFile);
-	if (!not_found)
-		DEBUG_LOGF("Couldn't unmatch '%S' %d", filename, __LINE__);
 	return not_found;
 }
