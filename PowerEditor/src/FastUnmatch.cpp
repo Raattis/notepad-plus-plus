@@ -26,101 +26,64 @@
 
 namespace detail
 {
-inline static bool contains(const uint8_t* __restrict haystack, size_t len, const std::vector<uint8_t>& needle)
+inline static bool matches(const uint8_t* __restrict haystack, size_t len, const std::vector<uint8_t>& needle)
 {
-	const uint8_t* last = haystack + len - needle.size();
-	const uint8_t* __restrict ptr = needle.data() + 1;
-	const size_t ptrLen = needle.size() - 1;
-	for (; haystack <= last; ++haystack)
+	if (len < needle.size())
+		return false;
+
+	for (size_t i = 0; i < needle.size(); ++i)
 	{
-		if (haystack[0] != needle[0])
+		if (haystack[i] == needle[i])
 			continue;
 
-		if (0 != memcmp(haystack, ptr, ptrLen))
-			continue;
-
-		return true;
+		return false;
 	}
-	return false;
+	return true;
 }
 
-inline static bool containsWide(const uint16_t* __restrict haystack, size_t len, const std::vector<uint16_t>& needle)
+inline static bool matchesWide(const uint16_t* __restrict haystack, [[maybe_unused]] size_t len, const std::vector<uint16_t>& needle)
 {
-	const uint16_t* last = haystack + len - needle.size();
-	const uint16_t* __restrict ptr = needle.data() + 1;
-	const size_t ptrLen = needle.size() - 1;
-	for (; haystack <= last; ++haystack)
+	if (len < needle.size())
+		return false;
+
+	for (size_t i = 0; i < needle.size(); ++i)
 	{
-		if (haystack[0] != needle[0])
+		if (haystack[i] == needle[i])
 			continue;
 
-		if (0 != memcmp(haystack, ptr, ptrLen))
-			continue;
-
-		return true;
+		return false;
 	}
-	return false;
+	return true;
 }
 
-inline static bool containsCaseInsensitive(const uint8_t* haystack, size_t len, const std::vector<uint8_t>& lower, const std::vector<uint8_t>& upper)
+inline static bool matchesCaseInsensitive(const uint8_t* haystack, [[maybe_unused]] size_t len, const std::vector<uint8_t>& lower, const std::vector<uint8_t>& upper)
 {
-	const uint8_t lower0 = lower[0];
-	const uint8_t upper0 = upper[0];
+	if (len < lower.size())
+		return false;
 
-	const size_t needleLen = lower.size();
-	const uint8_t* last = haystack + len - needleLen;
-	for (; haystack <= last; ++haystack)
+	for (size_t i = 0; i < lower.size(); ++i)
 	{
-		if (haystack[0] != lower0 && haystack[0] != upper0)
-		{
-			continue;
-		}
-
-		bool no_match = false;
-		for (size_t i = 1; i < needleLen; ++i)
-		{
-			if (haystack[i] == lower[i] || haystack[i] == upper[i])
-				continue;
-
-			no_match = true;
-			break;
-		}
-		if (no_match)
+		if (haystack[i] == lower[i] || haystack[i] == upper[i])
 			continue;
 
-		return true;
+		return false;
 	}
-	return false;
+	return true;
 }
 
-inline static bool containsCaseInsensitiveWide(const uint16_t* haystack, size_t len, const std::vector<uint16_t>& lower, const std::vector<uint16_t>& upper)
+inline static bool matchesCaseInsensitiveWide(const uint16_t* haystack, [[maybe_unused]] size_t len, const std::vector<uint16_t>& lower, const std::vector<uint16_t>& upper)
 {
-	const uint16_t lower0 = lower[0];
-	const uint16_t upper0 = upper[0];
+	if (len < lower.size())
+		return false;
 
-	const size_t needleLen = lower.size();
-	const uint16_t* last = haystack + len - needleLen;
-	for (; haystack <= last; ++haystack)
+	for (size_t i = 0; i < lower.size(); ++i)
 	{
-		if (haystack[0] != lower0 && haystack[0] != upper0)
+		if (haystack[i] == lower[i] || haystack[i] == upper[i])
 			continue;
 
-		bool no_match = false;
-		for (size_t i = 1; i < needleLen; ++i)
-		{
-			if (haystack[i] == lower[i] || haystack[i] == upper[i])
-				continue;
-
-			no_match = true;
-			break;
-		}
-
-		if (no_match)
-			continue;
-
-		return true;
+		return false;
 	}
-	return false;
+	return true;
 }
 
 /*
@@ -185,6 +148,10 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 	if (filesCount < minFileCount)
 		return;
 
+	static volatile bool disableTweak = false;
+	if (disableTweak)
+		return;
+
 	std::wstring baseSearchString;
 
 	if (findOptions._searchType == FindExtended)
@@ -200,8 +167,8 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 	}
 	else if (findOptions._searchType == FindRegex)
 	{
-		enabled = false; return; // NOCOMMIT
-
+		enabled = false;
+		return;
 		// TODO: Check if the regex search term contains a simple string and do unmatching using that or alternatively
 		// TODO: Save a regex to the context and use it for matching.
 	}
@@ -211,6 +178,7 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 
 	enabled = true;
 
+	if (matchCase)
 	{
 		searchTermsWideLE.assign(baseSearchString.begin(), baseSearchString.end());
 		std::vector<uint16_t>& bigEndian = searchTermsWideBE;
@@ -252,16 +220,19 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 	{
 		auto addCodePage = [&](int codePage) -> bool
 		{
+			if (!enabled)
+				return false;
+
 			std::vector<uint8_t> multiByteSearchString;
 			if (!convertCodePage(codePage, baseSearchString, multiByteSearchString))
 				return false;
 
-			for (const auto& [codepage, searchTerm] : searchTerms)
+			for (const auto& searchTerm : searchTerms)
 			{
 				if (searchTerm == multiByteSearchString)
 					return false;
 			}
-			searchTerms.emplace_back(codePage, std::move(multiByteSearchString));
+			searchTerms.emplace_back(std::move(multiByteSearchString));
 			return true;
 		};
 
@@ -287,54 +258,51 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 		}
 		for (uint16_t wc : upper)
 		{
-			searchTermsWideCaseInsensitiveBE.lower.emplace_back() = (wc >> 8) | (wc << 8);
+			searchTermsWideCaseInsensitiveBE.upper.emplace_back() = (wc >> 8) | (wc << 8);
 		}
 
 		auto addCodePageCaseInsensitive = [&](int codePage)
 			{
 				std::vector<uint8_t> resultLower;
 				std::vector<uint8_t> resultUpper;
+				if (!convertCodePage(codePage, lower, resultLower))
+					return false;
+				if (!convertCodePage(codePage, upper, resultUpper))
+					return false;
 
-				int neededSize = WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), NULL, 0, NULL, NULL);
-				if (neededSize > 0)
-				{
-					resultLower.resize(neededSize, 0);
-					WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), (char*)resultLower.data(), neededSize, NULL, NULL);
-				}
-
-				neededSize = WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), NULL, 0, NULL, NULL);
-				if (neededSize > 0)
-				{
-					resultUpper.resize(neededSize, 0);
-					WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), (char*)resultUpper.data(), neededSize, NULL, NULL);
-				}
-
-				size_t shorter = resultLower.size() < resultUpper.size() ? resultLower.size() : resultUpper.size();
-				if (shorter == 0)
+				size_t shorterLength = resultLower.size() < resultUpper.size() ? resultLower.size() : resultUpper.size();
+				if (shorterLength == 0)
 				{
 					return false;
 				}
 
-				resultLower.resize(shorter);
-				resultUpper.resize(shorter);
+				if (shorterLength == 1)
+				{
+					// All valid search terms must be at least 2 bytes to enable fast unmatching
+					enabled = false;
+					return false;
+				}
+
+				resultLower.resize(shorterLength);
+				resultUpper.resize(shorterLength);
 
 				if (resultLower == resultUpper)
 				{
-					for (const auto& [codepage, searchTerm] : searchTerms)
+					for (const auto& searchTerm : searchTerms)
 					{
 						if (searchTerm == resultLower)
 							return false;
 					}
-					searchTerms.emplace_back(codePage, std::move(resultLower));
+					searchTerms.emplace_back(std::move(resultLower));
 				}
 				else
 				{
-					for (const auto& [codepage, searchTerm] : searchTermsCaseInsensitive)
+					for (const auto& searchTerm : searchTermsCaseInsensitive)
 					{
 						if (searchTerm.lower == resultLower && searchTerm.upper == resultUpper)
 							return false;
 					}
-					searchTermsCaseInsensitive.emplace_back(codePage, UpperAndLower8{ std::move(resultLower), std::move(resultUpper) });
+					searchTermsCaseInsensitive.emplace_back(UpperAndLower8{ std::move(resultLower), std::move(resultUpper) });
 				}
 				return true;
 			};
@@ -356,52 +324,112 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 			addCodePageCaseInsensitive(codePage);
 		}
 	}
-}
 
-bool FastUnmatch::doesMatch([[maybe_unused]] const TCHAR* filename, const uint8_t* fileContents, size_t fileSize, uint32_t unimode) const
-{
-	switch (unimode)
+	auto insertUniqueTwoBytes = [&](const void* twoBytesPtr)
 	{
-	case uni8Bit: [[fallthrough]]; // ANSI
-	case uniUTF8: [[fallthrough]]; // UTF-8 with BOM
-	case uniCookie: [[fallthrough]]; // UTF-8 without BOM
-	case uni7Bit:
-		for (const auto& [codepage, searchTerm] : searchTerms)
-		{
-			if (!detail::contains(fileContents, fileSize, searchTerm))
-				continue;
-
-			DEBUG_LOGF("Matched '%S' codepage: %d, unimode: %d, line:%d", filename, codepage, unimode, __LINE__);
-			return true;
-		}
-		for (const auto& [codepage, searchTermCaseInsensitive] : searchTermsCaseInsensitive)
-		{
-			if (!detail::containsCaseInsensitive(fileContents, fileSize, searchTermCaseInsensitive.lower, searchTermCaseInsensitive.upper))
-				continue;
-
-			DEBUG_LOGF("Matched '%S' codepage: %d, unimode: %d, line:%d", filename, codepage, unimode, __LINE__);
-			return true;
-		}
-		break;
-	case uni16BE: [[fallthrough]]; // UTF-16 Big Endian with BOM
-	case uni16BE_NoBOM: // UTF-16 Big Endian without BOM
-		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideBE))
-			return true;
-		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveBE.lower, searchTermsWideCaseInsensitiveBE.upper))
-			return true;
-		DEBUG_LOGF("Couldn't unmatch '%S' %d, unimode: %d", filename, unimode, __LINE__);
-		break;
-	case uni16LE: [[fallthrough]]; // UTF-16 Little Endian with BOM
-	case uni16LE_NoBOM: // UTF-16 Little Endian without BOM
-		if (matchCase && !detail::containsWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideLE))
-			return true;
-		if (!matchCase && !detail::containsCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveLE.lower, searchTermsWideCaseInsensitiveLE.upper))
-			return true;
-		break;
-	case uniEnd:
-		break;
+		const uint16_t twoBytes = *(const uint16_t*)twoBytesPtr;
+		if (std::find(firstTwoBytes.begin(), firstTwoBytes.end(), twoBytes) == firstTwoBytes.end())
+			firstTwoBytes.emplace_back(twoBytes);
+	};
+	
+	auto insertUniqueFourBytes = [&](const void* fourBytesPtr)
+	{
+		const uint32_t fourBytes = *(const uint32_t*)fourBytesPtr;
+		if (std::find(firstFourBytes.begin(), firstFourBytes.end(), fourBytes) == firstFourBytes.end())
+			firstFourBytes.emplace_back(fourBytes);
 	};
 
+	for (const auto& searchTerm : searchTerms)
+	{
+		if (searchTerm.size() >= 4)
+			insertUniqueFourBytes(searchTerm.data());
+		else
+			insertUniqueTwoBytes(searchTerm.data());
+	}
+
+	for (const auto& searchTermCaseInsensitive : searchTermsCaseInsensitive)
+	{
+		const auto& lower = searchTermCaseInsensitive.lower;
+		const auto& upper = searchTermCaseInsensitive.upper;
+		uint16_t twoBytes;
+		twoBytes = (uint16_t)lower[0] + ((uint16_t)lower[1] << 8); insertUniqueTwoBytes(&twoBytes);
+		twoBytes = (uint16_t)lower[0] + ((uint16_t)upper[1] << 8); insertUniqueTwoBytes(&twoBytes);
+		twoBytes = (uint16_t)upper[0] + ((uint16_t)lower[1] << 8); insertUniqueTwoBytes(&twoBytes);
+		twoBytes = (uint16_t)upper[0] + ((uint16_t)upper[1] << 8); insertUniqueTwoBytes(&twoBytes);
+	}
+	
+	if (searchTermsWideBE.size() > 0)
+	{
+		if (searchTermsWideBE.size() >= 2)
+		{
+			insertUniqueFourBytes(searchTermsWideBE.data());
+			insertUniqueFourBytes(searchTermsWideLE.data());
+		}
+		else
+		{
+			insertUniqueTwoBytes(searchTermsWideBE.data());
+			insertUniqueTwoBytes(searchTermsWideLE.data());
+		}
+	}
+	else
+	{
+		if (searchTermsWideCaseInsensitiveBE.lower.size() >= 2)
+		{
+			uint32_t fourBytes;
+			fourBytes = searchTermsWideCaseInsensitiveLE.lower[0] + (searchTermsWideCaseInsensitiveLE.lower[1] << 16);
+			insertUniqueFourBytes(&fourBytes);
+			fourBytes = searchTermsWideCaseInsensitiveLE.lower[0] + (searchTermsWideCaseInsensitiveLE.upper[1] << 16);
+			insertUniqueFourBytes(&fourBytes);
+			fourBytes = searchTermsWideCaseInsensitiveLE.upper[0] + (searchTermsWideCaseInsensitiveLE.lower[1] << 16);
+			insertUniqueFourBytes(&fourBytes);
+			fourBytes = searchTermsWideCaseInsensitiveLE.upper[0] + (searchTermsWideCaseInsensitiveLE.upper[1] << 16);
+			insertUniqueFourBytes(&fourBytes);
+
+			fourBytes = searchTermsWideCaseInsensitiveBE.lower[0] + (searchTermsWideCaseInsensitiveBE.lower[1] << 16);
+			insertUniqueFourBytes(&fourBytes);
+			fourBytes = searchTermsWideCaseInsensitiveBE.lower[0] + (searchTermsWideCaseInsensitiveBE.upper[1] << 16);
+			insertUniqueFourBytes(&fourBytes);
+			fourBytes = searchTermsWideCaseInsensitiveBE.upper[0] + (searchTermsWideCaseInsensitiveBE.lower[1] << 16);
+			insertUniqueFourBytes(&fourBytes);
+			fourBytes = searchTermsWideCaseInsensitiveBE.upper[0] + (searchTermsWideCaseInsensitiveBE.upper[1] << 16);
+			insertUniqueFourBytes(&fourBytes);
+		}
+		else
+		{
+			insertUniqueTwoBytes(searchTermsWideCaseInsensitiveLE.lower.data());
+			insertUniqueTwoBytes(searchTermsWideCaseInsensitiveLE.upper.data());
+			insertUniqueTwoBytes(searchTermsWideCaseInsensitiveBE.lower.data());
+			insertUniqueTwoBytes(searchTermsWideCaseInsensitiveBE.upper.data());
+		}
+	}
+}
+
+bool FastUnmatch::doesMatch([[maybe_unused]] const TCHAR* filename, const uint8_t* fileContents, size_t fileSize) const
+{
+	for (const auto& searchTerm : searchTerms)
+	{
+		if (detail::matches(fileContents, fileSize, searchTerm))
+			return true;
+	}
+
+	for (const auto& searchTermCaseInsensitive : searchTermsCaseInsensitive)
+	{
+		if (detail::matchesCaseInsensitive(fileContents, fileSize, searchTermCaseInsensitive.lower, searchTermCaseInsensitive.upper))
+			return true;
+	}
+
+	if (matchCase)
+	{
+		if (detail::matchesWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideBE)
+			|| detail::matchesWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideLE))
+			return true;
+	}
+	else
+	{
+		if (detail::matchesCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveBE.lower, searchTermsWideCaseInsensitiveBE.upper)
+			|| detail::matchesCaseInsensitiveWide(reinterpret_cast<const uint16_t*>(fileContents), fileSize / 2, searchTermsWideCaseInsensitiveLE.lower, searchTermsWideCaseInsensitiveLE.upper))
+			return true;
+	}
 	return false;
 }
 
@@ -411,7 +439,7 @@ bool FastUnmatch::fileDoesNotContainString(const TCHAR* filename) const
 	if (hFile == INVALID_HANDLE_VALUE)
 		return false;
 
-	DWORD fileSize = GetFileSize(hFile, NULL);
+	const DWORD fileSize = GetFileSize(hFile, NULL);
 	if (fileSize == INVALID_FILE_SIZE)
 		return false;
 
@@ -430,22 +458,76 @@ bool FastUnmatch::fileDoesNotContainString(const TCHAR* filename) const
 		return false;
 	}
 
-	UniMode unimode = Utf8_16_Read::determineEncoding(fileContents, fileSize);
-
 	bool not_found = true;
-	const size_t maxChunkSize = 4096;
-	for (size_t start = 0; start < fileSize; start += maxChunkSize)
+	static volatile size_t maxChunkSizeTweak = 4096;
+	const size_t maxChunkSize = (size_t)maxChunkSizeTweak;
+	size_t head = 0;
+	while (head < fileSize)
 	{
-		size_t length = std::min(fileSize - start, maxChunkSize);
-		if (doesMatch(filename, fileContents, length, unimode))
+		const uint8_t* __restrict f = fileContents;
+
+		bool found = false;
+		for ( ; head < fileSize; head += maxChunkSize)
 		{
+			for (const uint16_t twoBytes : firstTwoBytes)
+			{
+				for (size_t i = 0; head + i + 1 < fileSize && i < maxChunkSize; ++i)
+				{
+					if (*(uint16_t*)(f + head + i) != twoBytes)
+						continue;
+
+					head += i;
+					found = true;
+					break;
+				}
+				if (found)
+					break;
+			}
+			if (found)
+				break;
+			for (const uint32_t fourBytes : firstFourBytes)
+			{
+				for (size_t i = 0; head + i + 3 < fileSize && i < maxChunkSize; ++i)
+				{
+					if (*(uint32_t*)(f + head + i) != fourBytes)
+						continue;
+
+					head += i;
+					found = true;
+					break;
+				}
+				if (found)
+					break;
+			}
+			if (found)
+				break;
+		}
+
+		if (!found)
+			break;
+
+		size_t length = std::min(fileSize - head, maxChunkSize);
+		if (length == 0)
+			break;
+
+		DEBUG_LOGF("Does %d MB file '%S' match?", fileSize / 1024 / 1024, filename);
+
+		if (doesMatch(filename, fileContents + head, length))
+		{
+			DEBUG_LOGF("-----> yes %d MB file '%S' does match! <---------------------------------", fileSize / 1024 / 1024, filename);
+
 			not_found = false;
+			hits += 1;
 			break;
 		}
+
+		head += 1;
 	}
 
 	UnmapViewOfFile(fileContents);
 	CloseHandle(hMapping);
 	CloseHandle(hFile);
+
+
 	return not_found;
 }

@@ -42,11 +42,11 @@ public:
 	}
 
 private:
-	bool doesMatch(const TCHAR* filename, const uint8_t* fileContents, size_t fileSize, uint32_t unimode) const;
+	bool doesMatch(const TCHAR* filename, const uint8_t* fileContents, size_t fileSize) const;
 
 	bool enabled;
 	bool matchCase;
-	std::vector<std::pair<int, std::vector<uint8_t>>> searchTerms;
+	std::vector<std::vector<uint8_t>> searchTerms;
 	std::vector<uint16_t> searchTermsWideBE;
 	std::vector<uint16_t> searchTermsWideLE;
 
@@ -60,7 +60,12 @@ private:
 		std::vector<uint16_t> upper;
 		std::vector<uint16_t> lower;
 	};
-	std::vector<std::pair<int, UpperAndLower8>> searchTermsCaseInsensitive;
+	std::vector<UpperAndLower8> searchTermsCaseInsensitive;
 	UpperAndLower16 searchTermsWideCaseInsensitiveBE;
 	UpperAndLower16 searchTermsWideCaseInsensitiveLE;
+
+	std::vector<uint16_t> firstTwoBytes;
+	std::vector<uint32_t> firstFourBytes;
+
+	mutable int hits = 0;
 };
