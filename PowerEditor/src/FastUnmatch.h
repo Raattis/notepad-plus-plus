@@ -42,7 +42,7 @@ public:
 	}
 
 private:
-	bool doesMatch(const TCHAR* filename, const uint8_t* fileContents, size_t fileSize) const;
+	bool doesMatch(const TCHAR* filename, const uint8_t* fileContents, size_t fileSize, uint32_t unimode) const;
 
 	bool enabled;
 	bool matchCase;

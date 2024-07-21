@@ -236,6 +236,18 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 		return true;
 	};
 
+	std::wstring lower = baseSearchString;
+	std::wstring upper = baseSearchString;
+	if (!matchCase)
+	{
+		CharLowerW(lower.data());
+		CharUpperW(upper.data());
+		if (upper == lower)
+		{
+			matchCase = true;
+		}
+	}
+
 	if (matchCase)
 	{
 		auto addCodePage = [&](int codePage) -> bool
@@ -267,35 +279,36 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 	}
 	else
 	{
-		std::wstring lower = baseSearchString;
-		std::wstring upper = baseSearchString;
-		errno_t err = _wcslwr_s(lower.data(), lower.length() + 1);
-		DEBUG_LOGF("err: %d", err);
-		err = _wcsupr_s(upper.data(), upper.length() + 1);
-		DEBUG_LOGF("err: %d", err);
+		searchTermsWideCaseInsensitiveLE.lower.assign(lower.begin(), lower.end());
+		searchTermsWideCaseInsensitiveLE.upper.assign(upper.begin(), upper.end());
+		for (uint16_t wc : lower)
+		{
+			searchTermsWideCaseInsensitiveBE.lower.emplace_back() = (wc >> 8) | (wc << 8);
+		}
+		for (uint16_t wc : upper)
+		{
+			searchTermsWideCaseInsensitiveBE.lower.emplace_back() = (wc >> 8) | (wc << 8);
+		}
 
 		auto addCodePageCaseInsensitive = [&](int codePage)
-		{
-			std::vector<uint8_t> resultLower;
-			std::vector<uint8_t> resultUpper;
-
-
-			int neededSize = WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), NULL, 0, NULL, NULL);
-			if (neededSize > 0)
 			{
-				resultLower.resize(neededSize, 0);
-				WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), (char*)resultLower.data(), neededSize, NULL, NULL);
-			}
+				std::vector<uint8_t> resultLower;
+				std::vector<uint8_t> resultUpper;
 
-			neededSize = WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), NULL, 0, NULL, NULL);
-			if (neededSize > 0)
-			{
-				resultUpper.resize(neededSize, 0);
-				WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), (char*)resultUpper.data(), neededSize, NULL, NULL);
-			}
+				int neededSize = WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), NULL, 0, NULL, NULL);
+				if (neededSize > 0)
+				{
+					resultLower.resize(neededSize, 0);
+					WideCharToMultiByte(codePage, 0, lower.c_str(), (int)lower.size(), (char*)resultLower.data(), neededSize, NULL, NULL);
+				}
 
-			if (resultLower.size() != resultUpper.size())
-			{
+				neededSize = WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), NULL, 0, NULL, NULL);
+				if (neededSize > 0)
+				{
+					resultUpper.resize(neededSize, 0);
+					WideCharToMultiByte(codePage, 0, upper.c_str(), (int)upper.size(), (char*)resultUpper.data(), neededSize, NULL, NULL);
+				}
+
 				size_t shorter = resultLower.size() < resultUpper.size() ? resultLower.size() : resultUpper.size();
 				if (shorter == 0)
 				{
@@ -304,28 +317,27 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 
 				resultLower.resize(shorter);
 				resultUpper.resize(shorter);
-			}
 
-			if (resultLower == resultUpper)
-			{
-				for (const auto& [codepage, searchTerm] : searchTerms)
+				if (resultLower == resultUpper)
 				{
-					if (searchTerm == resultLower)
-						return false;
+					for (const auto& [codepage, searchTerm] : searchTerms)
+					{
+						if (searchTerm == resultLower)
+							return false;
+					}
+					searchTerms.emplace_back(codePage, std::move(resultLower));
 				}
-				searchTerms.emplace_back(codePage, std::move(resultLower));
-			}
-			else
-			{
-				for (const auto& [codepage, searchTerm] : searchTermsCaseInsensitive)
+				else
 				{
-					if (searchTerm.lower == resultLower && searchTerm.upper == resultUpper)
-						return false;
+					for (const auto& [codepage, searchTerm] : searchTermsCaseInsensitive)
+					{
+						if (searchTerm.lower == resultLower && searchTerm.upper == resultUpper)
+							return false;
+					}
+					searchTermsCaseInsensitive.emplace_back(codePage, UpperAndLower8{ std::move(resultLower), std::move(resultUpper) });
 				}
-				searchTermsCaseInsensitive.emplace_back(codePage, UpperAndLower8{std::move(resultLower), std::move(resultUpper)});
-			}
-			return true;
-		};
+				return true;
+			};
 
 		bool utf8Added = addCodePageCaseInsensitive(CP_UTF8);
 		if (!utf8Added)
@@ -346,9 +358,8 @@ FastUnmatch::FastUnmatch(size_t filesCount, const FindOption& findOptions)
 	}
 }
 
-bool FastUnmatch::doesMatch([[maybe_unused]] const TCHAR* filename, const uint8_t* fileContents, size_t fileSize) const
+bool FastUnmatch::doesMatch([[maybe_unused]] const TCHAR* filename, const uint8_t* fileContents, size_t fileSize, uint32_t unimode) const
 {
-	UniMode unimode = Utf8_16_Read::determineEncoding(fileContents, fileSize);
 	switch (unimode)
 	{
 	case uni8Bit: [[fallthrough]]; // ANSI
@@ -419,7 +430,19 @@ bool FastUnmatch::fileDoesNotContainString(const TCHAR* filename) const
 		return false;
 	}
 
-	bool not_found = !doesMatch(filename, fileContents, fileSize);
+	UniMode unimode = Utf8_16_Read::determineEncoding(fileContents, fileSize);
+
+	bool not_found = true;
+	const size_t maxChunkSize = 4096;
+	for (size_t start = 0; start < fileSize; start += maxChunkSize)
+	{
+		size_t length = std::min(fileSize - start, maxChunkSize);
+		if (doesMatch(filename, fileContents, length, unimode))
+		{
+			not_found = false;
+			break;
+		}
+	}
 
 	UnmapViewOfFile(fileContents);
 	CloseHandle(hMapping);
